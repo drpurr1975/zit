@@ -1,0 +1,55 @@
+stages:
+  - install
+  - test
+# Для выполнения пайплайна требуются переменные в настройках CI/CD репозитория:
+# SSH_PRIVATE_KEY — приватный ключ для доступа к серверу, где устанавливаем nginx
+# SSH_USER — пользователь на сервере с доступом по SSH
+# SSH_HOST — адрес хоста для установки и проверки nginx
+# SSH_KNOWN_HOSTS — отпечаток публичного ключа на сервере
+
+# Переменная нужна чтобы избежать запроса на добавление хоста 
+# в known_hosts, что требует ввода с консоли
+variables:
+  SSH_OPTIONS: "-o StrictHostKeyChecking=no"
+
+# Обновление репозиториев, установка ssh клиента, запуск агента,
+# добавление приватного ключа, установка прав и добавление fingerprint 
+# публичного ключа в known_hosts
+.before_ssh:
+  before_script:
+    - apt-get update -qq && apt-get install -y openssh-client
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+# Обновление локального списка пакетов репозиториев, установка nginx без подтверждения,
+# добавление сервиса nginx в автостарт и запуск сервиса
+install_nginx:
+  stage: install
+  image: debian:stable
+  extends: .before_ssh
+  script:
+    - |
+      ssh $SSH_OPTIONS $SSH_USER@$SSH_HOST '
+      sudo apt-get update &&
+      sudo apt-get install -y nginx &&
+      sudo systemctl enable nginx &&
+      sudo systemctl start nginx'
+
+# Запуск проверки на местоположение и версию nginx, если хоть одна из проверок завершилась с ошибкой,
+# то вывод сообщения в лог пайплайна. Требует завершенной джобы установки nginx для выполнения
+check_nginx:
+  stage: check
+  image: debian:stable
+  extends: .before_ssh
+  script:
+    - |
+      ssh $SSH_OPTIONS $SSH_USER@$SSH_HOST '
+      which nginx && nginx -v' || {
+        echo "❌ Nginx не найден или не запускается.";
+        exit 1;
+      }
+  needs:
+    - install_nginx
